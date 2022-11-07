@@ -1,0 +1,175 @@
+import pandas as pd
+pd.set_option('display.max_columns', None)
+import numpy as np
+
+from sklearn.dummy import DummyClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier
+import xgboost as xgb
+import catboost as ctb
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import cross_val_score, StratifiedKFold, cross_val_predict
+
+import eli5
+from tqdm import tqdm
+from sklearn.metrics import fbeta_score, precision_score, recall_score
+
+import seaborn as sns
+sns.set(rc={'figure.figsize':(15,5)})
+import matplotlib.pyplot as plt
+
+df_train = pd.read_hdf("../input/train_churn_pred.h5")
+df_test = pd.read_hdf("../input/test_churn_pred.h5")
+
+black_list = ["id", "churn_probability"]
+feats = [x for x in df_train.select_dtypes("number").columns if x not in black_list]
+
+def get_X_y(feats):
+    X_train = df_train[feats].fillna(-1).values
+    y_train = df_train["churn_probability"].values
+    
+    return X_train, y_train
+
+def build_and_imp(model, feats): 
+    X_train, y_train = get_X_y(feats)
+    model.fit(X_train, y_train)
+    return eli5.show_weights(model, feature_names=feats, top=len(feats))
+
+
+#Procedura do lokalnego testowania modelu 
+def build_and_show_score3(model, feats): 
+    X_train, y_train = get_X_y(feats)
+    cv = StratifiedKFold(n_splits=3, random_state=0, shuffle=True)
+    scores = []
+    for train_idx, test_idx in cv.split(X_train, y_train):    
+        X_train_train, X_train_test = X_train[train_idx], X_train[test_idx]
+        y_train_train, y_train_test = y_train[train_idx], y_train[test_idx]
+        
+        model.fit(X_train_train, y_train_train)
+        
+        y_pred_proba = model.predict_proba(X_train_test) [:, 1]
+        y_train_pred = (y_pred_proba > 0.2).astype("int")    #Szacuje wynik na podstawie trheshold'u > 0.2
+                
+        score = fbeta_score(y_train_test, y_train_pred, beta=1.5)
+        scores.append( score )        
+    return np.mean(scores)
+      
+
+#Najważniejsze cechy dla najlepiej rokujących modeli (Xgb, catboost) stworzone na podstawie eli5.show_weights
+feats_new= ["total_ic_mou_8", "av_rech_amt_data_8", "roam_og_mou_8","std_og_t2c_mou_8","last_day_rch_amt_8","loc_ic_mou_8","loc_ic_t2m_mou_7","total_rech_amt_8","std_og_mou_7","loc_og_t2f_mou_8","arpu_7","total_og_mou_8","loc_ic_t2m_mou_8","aon","max_rech_amt_6","last_day_rch_amt_7","max_rech_amt_8","total_rech_num_7","roam_og_mou_7","loc_ic_t2m_mou_6","loc_ic_t2f_mou_7","total_rech_num_8","roam_ic_mou_7","loc_ic_mou_7","isd_og_mou_8","arpu_3g_6","loc_ic_t2f_mou_6","std_og_t2m_mou_7","total_ic_mou_6","last_day_rch_amt_6","onnet_mou_7","loc_ic_t2t_mou_6","isd_ic_mou_6","loc_og_t2t_mou_7","loc_og_t2f_mou_7","fb_user_8","isd_ic_mou_8","std_og_t2f_mou_7","std_og_t2o_mou","loc_ic_t2t_mou_8","std_ic_t2m_mou_7","std_og_mou_6","max_rech_data_7","arpu_3g_7","arpu_2g_6","std_og_mou_8","monthly_2g_7","spl_ic_mou_7","aug_vbc_3g","std_ic_t2t_mou_6","loc_og_t2m_mou_6","av_rech_amt_data_6","onnet_mou_6","spl_og_mou_7","loc_og_t2t_mou_8","offnet_mou_8","offnet_mou_7","count_rech_2g_6","vol_3g_mb_6","std_ic_t2m_mou_6","roam_og_mou_6","loc_og_t2c_mou_6","roam_ic_mou_6","std_ic_t2t_mou_7","vol_3g_mb_8","ic_others_6","loc_og_mou_8"]
+feats_new1=["spl_ic_mou_8","roam_ic_mou_8", "loc_og_t2m_mou_8", "arpu_8", "monthly_2g_8", "std_ic_t2m_mou_8", "night_pck_user_8", "offnet_mou_6", "total_rech_num_6", "onnet_mou_8", "loc_og_t2c_mou_7", "loc_og_t2m_mou_6"]
+
+#####################################################
+#Dodanie cech opartych na datach. Dla każdej cechy wyliczam ilość dni od 2000-01-01 00:00:00
+feats_date = [x for x in df_train.select_dtypes("object").columns if x not in black_list] #stworzenie listy feats_date
+
+# DF_TRAIN stworzenie cech zawierających różnicę dni od daty 2000-01-01
+df_train[feats_date]= df_train[feats_date].fillna(pd.to_datetime("2000-01-01 00:00:00", yearfirst=True)) # wypełnienie pustych "2000-01-01 00:00:00"
+df_train ["date_of_last_rech_6i"] = (pd.to_datetime(df_train ["date_of_last_rech_6"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+df_train ["date_of_last_rech_7i"] = (pd.to_datetime(df_train ["date_of_last_rech_7"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+df_train ["date_of_last_rech_8i"] = (pd.to_datetime(df_train ["date_of_last_rech_8"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+df_train ["date_of_last_rech_data_6i"] = (pd.to_datetime(df_train ["date_of_last_rech_data_6"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+df_train ["date_of_last_rech_data_7i"] = (pd.to_datetime(df_train ["date_of_last_rech_data_7"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+df_train ["date_of_last_rech_data_8i"] = (pd.to_datetime(df_train ["date_of_last_rech_data_8"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+
+# DF_TEST stworzenie cech zawierających różnicę dni od daty 2000-01-01
+df_test[feats_date]= df_test[feats_date].fillna(pd.to_datetime("2000-01-01 00:00:00", yearfirst=True)) # wypełnienie pustych "2000-01-01 00:00:00"
+df_test ["date_of_last_rech_6i"] = (pd.to_datetime(df_test ["date_of_last_rech_6"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+df_test ["date_of_last_rech_7i"] = (pd.to_datetime(df_test ["date_of_last_rech_7"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+df_test ["date_of_last_rech_8i"] = (pd.to_datetime(df_test ["date_of_last_rech_8"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+df_test ["date_of_last_rech_data_6i"] = (pd.to_datetime(df_test ["date_of_last_rech_data_6"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+df_test ["date_of_last_rech_data_7i"] = (pd.to_datetime(df_test ["date_of_last_rech_data_7"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+df_test ["date_of_last_rech_data_8i"] = (pd.to_datetime(df_test ["date_of_last_rech_data_8"]) - pd.to_datetime("2000-01-01 00:00:00")).astype(np.int)
+ 
+feats_date_diff= ["date_of_last_rech_6i", "date_of_last_rech_7i","date_of_last_rech_8i", "date_of_last_rech_data_6i","date_of_last_rech_data_7i","date_of_last_rech_data_8i"]
+
+#####################################################
+#Tworzenie cech sumujących wszystkie MOU per miesiąc
+#Dla TRAIN
+mou_6_cols = [col for col in df_train.columns if '_mou_6' in col]
+mou_7_cols = [col for col in df_train.columns if '_mou_7' in col]
+mou_8_cols = [col for col in df_train.columns if '_mou_8' in col]
+df_train['mou_6_sum'] = df_train[mou_6_cols].sum(axis=1)
+df_train['mou_7_sum'] = df_train[mou_7_cols].sum(axis=1)
+df_train['mou_8_sum'] = df_train[mou_8_cols].sum(axis=1)
+
+#Dla TEST
+mou_6_cols = [col for col in df_test.columns if '_mou_6' in col]
+mou_7_cols = [col for col in df_test.columns if '_mou_7' in col]
+mou_8_cols = [col for col in df_test.columns if '_mou_8' in col]
+df_test['mou_6_sum'] = df_test[mou_6_cols].sum(axis=1)
+df_test['mou_7_sum'] = df_test[mou_7_cols].sum(axis=1)
+df_test['mou_8_sum'] = df_test[mou_8_cols].sum(axis=1)
+
+feats_mou_sum = ['mou_6_sum', 'mou_7_sum','mou_8_sum']
+
+#####################################################
+#Tworzenie cech sumujących wszystkie RECH per miesiąc
+total_rech_num_cols = [col for col in df_train.columns if 'total_rech_num' in col]
+max_rech_amt_cols = [col for col in df_train.columns if 'max_rech_amt' in col]
+total_rech_data_cols = [col for col in df_train.columns if 'total_rech_data' in col]
+max_rech_data_cols = [col for col in df_train.columns if 'max_rech_data' in col]
+count_rech_2g_cols = [col for col in df_train.columns if 'count_rech_2g' in col]
+count_rech_3g_cols = [col for col in df_train.columns if 'count_rech_3g' in col]
+av_rech_amt_data_cols = [col for col in df_train.columns if 'av_rech_amt_data' in col]
+
+#Dla zbioru TRAIN
+df_train['total_rech_num_sum']=df_train[total_rech_num_cols].sum(axis=1)
+df_train['max_rech_amt_sum']=df_train[max_rech_amt_cols].sum(axis=1)
+df_train['total_rech_data_sum']=df_train[total_rech_data_cols].sum(axis=1)
+df_train['max_rech_data_sum']=df_train[max_rech_data_cols].sum(axis=1)
+df_train['count_rech_2g_sum']=df_train[count_rech_2g_cols].sum(axis=1)
+df_train['count_rech_3g_sum']=df_train[count_rech_3g_cols].sum(axis=1)
+df_train['av_rech_amt_data_sum']=df_train[av_rech_amt_data_cols].sum(axis=1)
+
+#Dla zbioru TEST
+total_rech_num_cols = [col for col in df_test.columns if 'total_rech_num' in col]
+max_rech_amt_cols = [col for col in df_test.columns if 'max_rech_amt' in col]
+total_rech_data_cols = [col for col in df_test.columns if 'total_rech_data' in col]
+max_rech_data_cols = [col for col in df_test.columns if 'max_rech_data' in col]
+count_rech_2g_cols = [col for col in df_test.columns if 'count_rech_2g' in col]
+count_rech_3g_cols = [col for col in df_test.columns if 'count_rech_3g' in col]
+av_rech_amt_data_cols = [col for col in df_test.columns if 'av_rech_amt_data' in col]
+
+df_test['total_rech_num_sum']=df_test[total_rech_num_cols].sum(axis=1)
+df_test['max_rech_amt_sum']=df_test[max_rech_amt_cols].sum(axis=1)
+df_test['total_rech_data_sum']=df_test[total_rech_data_cols].sum(axis=1)
+df_test['max_rech_data_sum']=df_test[max_rech_data_cols].sum(axis=1)
+df_test['count_rech_2g_sum']=df_test[count_rech_2g_cols].sum(axis=1)
+df_test['count_rech_3g_sum']=df_test[count_rech_3g_cols].sum(axis=1)
+df_test['av_rech_amt_data_sum']=df_test[av_rech_amt_data_cols].sum(axis=1)
+
+feats_rech_sum = ['total_rech_num_sum','max_rech_amt_sum', 'total_rech_data_sum','max_rech_data_sum','count_rech_2g_sum','count_rech_3g_sum', 'av_rech_amt_data_sum']
+
+feats_all = feats_new + feats_new1 + feats_date_diff + feats_mou + feats_rech_sum
+
+#####################################################
+# Procedura prognozująca wynik na zbiorze test
+# na końcu tworzy 5 plików do wrzucenia na kaggle
+
+models = [
+    DecisionTreeClassifier(max_depth=7),
+    RandomForestClassifier(max_depth=7, n_estimators = 100, random_state=0),
+    ExtraTreesClassifier(max_depth=7, n_estimators = 100, random_state=0),
+    xgb.XGBClassifier(max_depth=7, n_estimators = 100, random_state=0, learning_rate=0.3),
+    ctb.CatBoostClassifier(max_depth=7, n_estimators = 100, random_state=0, learning_rate=0.3, verbose=False),
+]
+
+X_train, y_train = get_X_y(feats_all)
+X_test = df_test[feats_all].fillna(-1).values
+
+pbar = tqdm(models)
+for model in models:
+
+    model_name = (str(model.__repr__).split("of")[-1].strip() #wyciągenia nazwy mode do model_name
+                  .split("(")[0].split(" ")[0].lower().replace("classifier","")
+                 )
+    pbar.set_description(str(model_name))
+    
+    model.fit(X_train,y_train)
+    y_pred_proba = model.predict_proba(X_test) [:, 1]
+    y_pred = (y_pred_proba > 0.2).astype("int")    #Szacuje wynik na podstawie trheshold'u > 0.2
+    
+    df_test["churn_probability"] = y_pred  
+    df_test[ ["id", "churn_probability"] ].to_csv("../output/{}_feats_with_dates_tresh.csv".format(model_name), index=False)
