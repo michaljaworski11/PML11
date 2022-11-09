@@ -142,7 +142,7 @@ df_test['av_rech_amt_data_sum']=df_test[av_rech_amt_data_cols].sum(axis=1)
 
 feats_rech_sum = ['total_rech_num_sum','max_rech_amt_sum', 'total_rech_data_sum','max_rech_data_sum','count_rech_2g_sum','count_rech_3g_sum', 'av_rech_amt_data_sum']
 
-feats_all = feats_new + feats_new1 + feats_date_diff + feats_mou + feats_rech_sum
+feats_all = feats_new + feats_new1 + feats_date_diff + feats_mou_sum + feats_rech_sum
 
 #####################################################
 # Procedura prognozująca wynik na zbiorze test
